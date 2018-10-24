@@ -9,7 +9,7 @@ import torch.nn as nn
 from collections import OrderedDict
 import os
 
-BATCH_SZ = 512
+BATCH_SZ = 1024
 use_gpu = False
 
 if use_gpu:
@@ -38,6 +38,7 @@ def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5):
         vgg_cor += vgg_correct(model, input, target) 
         knn_cor += knn_correct(model, k, input, target, feat_precomp, class_precomp)
         print('corr {} {}'.format(vgg_cor, knn_cor))
+        
         del input, target
     vgg_acc = vgg_cor/total
     knn_acc = knn_cor/total
@@ -98,8 +99,10 @@ def feat_extract(model, x):
     model.eval()
     #right now replace the classifier part with kNN
     #shape (batch_sz, 512, 1, 1)
-    #x = model.module.features(x)
-    x = model.features(x)
+    if use_gpu:
+        x = model.module.features(x)
+    else:
+        x = model.features(x)
     
     x = x.view(x.size(0), x.size(1))
     #print('x size {}'.format(x.size()))
@@ -181,12 +184,18 @@ def get_model(path='pretrained/ckpt.t7'):
     
     #checkpoint=torch.load(path, map_location='cpu')
     #checkpoint=torch.load(path, map_location=lambda storage, loc:storage)
+    #model was trained on GPU
     state_dict = torch.load(path)['net']
-    new_dict = OrderedDict()
-    for key, val in state_dict.items():
-        key = key[7:] #since 'module.' has len 7
-        new_dict[key] = val.to('cpu')
-    model.load_state_dict(new_dict)
+    if use_gpu:
+        model = nn.DataParallel(VGG('VGG16'))
+    else:
+        model = VGG('VGG16')
+        new_dict = OrderedDict()
+        for key, val in state_dict.items():
+            key = key[7:] #since 'module.' has len 7
+            new_dict[key] = val.to('cpu')
+        state_dict = new_dict
+    model.load_state_dict(state_dict)
     return model
 
 if __name__ == '__main__':
@@ -199,13 +208,16 @@ if __name__ == '__main__':
         embs = torch.load(embs_path)
         targets = torch.load(targets_path)
     else:        
-        train_loader = get_loader(train=False)
+        train_loader = get_loader(train=True)
         #compute feat embed for training data. (total_len, 512)
         embs, targets = create_embed(model, train_loader)
         torch.save(embs, 'data/train_embs.pth')
         torch.save(targets, 'data/train_classes.pth')
     
+    print('Done creating or loading embeddings for knn!')
     val_loader = get_loader(train=False)
-    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=5)
+    print('train dataset size {} test dataset size {}'.format(len(train_loader.dataset), len(val_loader.dataset) ))
+    
+    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=1)
     
     
