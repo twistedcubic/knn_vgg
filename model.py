@@ -9,8 +9,8 @@ import torch.nn as nn
 from collections import OrderedDict
 import os
 
-BATCH_SZ = 1024
-use_gpu = False
+BATCH_SZ = 128
+use_gpu = True
 
 if use_gpu:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -37,11 +37,12 @@ def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5):
         #compare the models
         vgg_cor += vgg_correct(model, input, target) 
         knn_cor += knn_correct(model, k, input, target, feat_precomp, class_precomp)
-        print('corr {} {}'.format(vgg_cor, knn_cor))
+        #print('corr {} {}'.format(vgg_cor, knn_cor))
         
         del input, target
     vgg_acc = vgg_cor/total
     knn_acc = knn_cor/total
+    print('vgg_cor: {} knn_cor: {} total: {}'.format(vgg_cor, knn_cor, total))
     print('vgg_acc: {} knn_acc: {}'.format(vgg_acc, knn_acc))
     
     return vgg_acc, knn_acc
@@ -54,8 +55,7 @@ def vgg_correct(model, input, target):
     #for i, (input, target) in enumerate(dataloader):
     output = model(input)
     _, output = output.max(1)
-    
-    
+        
     #print('vgg correct , output {}  {}'.format(output, target))
     correct = output.eq(target).sum(0)
 
@@ -75,6 +75,7 @@ def knn_correct(model, k, input, targets, feat_precomp, class_precomp):
     
     #find nearest for each
     for i, emb in enumerate(embs):
+        
         #feat_precomp shape (batch_sz, 512), emb shape (512)
         dist = dist_func(emb.unsqueeze(0), feat_precomp)
         target = targets[i]
@@ -118,10 +119,13 @@ Input:
 -knn: vgg model
 '''
 def create_embed(model, dataloader):
+    model.eval()
     embs = None
-    
-    targets = torch.LongTensor(len(dataloader.dataset))
+    #conserves memory
+    stream = False
+    targets = torch.LongTensor(len(dataloader.dataset)).to(device)    
     #datalist = []
+    file_counter = 0
     counter = 0
     batch_sz = 0
     for i, (input, target) in enumerate(dataloader):
@@ -129,19 +133,24 @@ def create_embed(model, dataloader):
         #print('input tgt sizes {}  {}'.format(input.size(), target.size()))
         input, target = input.to(device), target.to(device)
         #size (batch_sz, 512)
-        feat = feat_extract(model, input)
+        with torch.no_grad():
+            feat = feat_extract(model, input)
         
-        if embs is None:
-            batch_sz = target.size(0)
-            embs = torch.FloatTensor(len(dataloader.dataset), feat.size(1)) #########
-            #targets = None##########
-        #print('{} feat sz {}'.format(embs.size(), feat.size()))
-        embs[counter:counter+feat.size(0), :] = feat
-        targets[counter:counter+feat.size(0)] = target
-        counter += batch_sz
-        #check loader tensor or list########
-        #datalist.extend(input)
-
+        if not stream:
+            if embs is None:
+                batch_sz = target.size(0)            
+                embs = torch.FloatTensor(len(dataloader.dataset), feat.size(1)).to(device)
+            embs[counter:counter+feat.size(0), :] = feat
+            targets[counter:counter+feat.size(0)] = target
+            counter += batch_sz
+        elif stream:
+            embs = torch.FloatTensor(feat.size(0), feat.size(1))
+            torch.save(embs, 'data/train_embs{}.pth'.format(file_counter))
+            torch.save(target, 'data/train_classes{}.pth'.format(file_counter))
+            file_counter += 1
+        
+        del input, target, feat
+        #print('{} feat sz {}'.format(embs.size(), feat.size()))    
     return embs, targets
 
 transforms_train = [
@@ -202,15 +211,18 @@ if __name__ == '__main__':
     # train_loader = get_loader(train=True)
         
     model = get_model()
+    model.eval()
     embs_path = 'data/train_embs.pth'
     targets_path = 'data/train_classes.pth'
+    
+    train_loader = get_loader(train=True)
     if os.path.isfile(embs_path) and os.path.isfile(targets_path):
         embs = torch.load(embs_path)
         targets = torch.load(targets_path)
     else:        
-        train_loader = get_loader(train=True)
         #compute feat embed for training data. (total_len, 512)
         embs, targets = create_embed(model, train_loader)
+
         torch.save(embs, 'data/train_embs.pth')
         torch.save(targets, 'data/train_classes.pth')
     
@@ -218,6 +230,6 @@ if __name__ == '__main__':
     val_loader = get_loader(train=False)
     print('train dataset size {} test dataset size {}'.format(len(train_loader.dataset), len(val_loader.dataset) ))
     
-    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=1)
+    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=5)
     
     
