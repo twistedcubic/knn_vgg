@@ -8,9 +8,11 @@ from vgg import VGG
 import torch.nn as nn
 from collections import OrderedDict
 import os
+import time
 
 BATCH_SZ = 128
 use_gpu = True
+normalize_feat = True
 
 if use_gpu:
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -20,7 +22,7 @@ else:
 '''
 Replace last part of VGG with knn, compare results
 '''
-def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5):
+def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5, normalize_feat=False):
     #load data
     #val_loader = get_loader()
     #model=models.vgg16(pretrained=True)
@@ -35,8 +37,9 @@ def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5):
         #x_knn = feat_extract(vgg16, *data)
         input, target = input.to(device), target.to(device)
         #compare the models
-        vgg_cor += vgg_correct(model, input, target) 
-        knn_cor += knn_correct(model, k, input, target, feat_precomp, class_precomp)
+        with torch.no_grad():
+            vgg_cor += vgg_correct(model, input, target) 
+            knn_cor += knn_correct(model, k, input, target, feat_precomp, class_precomp, normalize_feat=normalize_feat)
         #print('corr {} {}'.format(vgg_cor, knn_cor))
         
         del input, target
@@ -66,20 +69,31 @@ Applies model to get features, find nearest amongst feature2img.
 Input:
 -x, img data, in batches.
 '''
-def knn_correct(model, k, input, targets, feat_precomp, class_precomp):
+def knn_correct(model, k, input, targets, feat_precomp, class_precomp, normalize_feat=False):
     
     embs = feat_extract(model, input)
     #print('embs size {}'.format(embs.size()))
     correct = 0
+    dist_func_name = 'l2'
+    #if dist_func_name == 'l2':
     dist_func = nn.PairwiseDistance()
-    
+
+    #can run matmul on entire batch instead of one!
     #find nearest for each
     for i, emb in enumerate(embs):
         
         #feat_precomp shape (batch_sz, 512), emb shape (512)
-        dist = dist_func(emb.unsqueeze(0), feat_precomp)
+        if dist_func_name == 'l2':
+            dist = dist_func(emb.unsqueeze(0), feat_precomp)
+        else:
+            if normalize_feat:
+                emb = F.normalize(emb, p=2, dim=0)
+            dist = torch.matmul(emb.unsqueeze(0), feat_precomp.t()).view(feat_precomp.size(0))
+            #print('dist {}'.format(dist.size()))
+            
+        val, idx = torch.topk(dist, k, largest=(False if dist_func_name=='l2' else True))
+        
         target = targets[i]
-        val, idx = torch.topk(dist, k, largest=False)
         #get classes of the imgs at idx
         pred_classes = class_precomp[idx]
         #print('idx  target {} {}'.format(idx, pred_classes))
@@ -118,7 +132,7 @@ Returns embeddings of imgs in dataset, as lists of data and embeddings.
 Input:
 -knn: vgg model
 '''
-def create_embed(model, dataloader):
+def create_embed(model, dataloader, normalize_feat=False):
     model.eval()
     embs = None
     #conserves memory
@@ -150,7 +164,9 @@ def create_embed(model, dataloader):
             file_counter += 1
         
         del input, target, feat
-        #print('{} feat sz {}'.format(embs.size(), feat.size()))    
+        #print('{} feat sz {}'.format(embs.size(), feat.size()))
+        if normalize_feat:
+            embs = F.normalize(embs, p=2, dim=1)
     return embs, targets
 
 transforms_train = [
@@ -212,8 +228,12 @@ if __name__ == '__main__':
         
     model = get_model()
     model.eval()
-    embs_path = 'data/train_embs.pth'
-    targets_path = 'data/train_classes.pth'
+    if normalize_feat:
+        embs_path = 'data/train_embs_norm.pth'
+        targets_path = 'data/train_classes_norm.pth'
+    else:
+        embs_path = 'data/train_embs.pth'
+        targets_path = 'data/train_classes.pth'
     
     train_loader = get_loader(train=True)
     if os.path.isfile(embs_path) and os.path.isfile(targets_path):
@@ -221,15 +241,15 @@ if __name__ == '__main__':
         targets = torch.load(targets_path)
     else:        
         #compute feat embed for training data. (total_len, 512)
-        embs, targets = create_embed(model, train_loader)
+        embs, targets = create_embed(model, train_loader, normalize_feat=normalize_feat)
 
-        torch.save(embs, 'data/train_embs.pth')
-        torch.save(targets, 'data/train_classes.pth')
+        torch.save(embs, embs_path)
+        torch.save(targets, targets_path)
     
     print('Done creating or loading embeddings for knn!')
     val_loader = get_loader(train=False)
     print('train dataset size {} test dataset size {}'.format(len(train_loader.dataset), len(val_loader.dataset) ))
     
-    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=5)
+    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=1, normalize_feat=normalize_feat)
     
     
