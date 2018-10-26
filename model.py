@@ -69,9 +69,9 @@ Applies model to get features, find nearest amongst feature2img.
 Input:
 -x, img data, in batches.
 '''
-def knn_correct(model, k, input, targets, feat_precomp, class_precomp, normalize_feat=False):
+def knn_correct(model, k, input, targets, feat_precomp, class_precomp, normalize_feat=False, num_layers=None):
     
-    embs = feat_extract(model, input)
+    embs = feat_extract(model, input, num_layers=num_layers)
     #print('embs size {}'.format(embs.size()))
     correct = 0
     dist_func_name = 'l2'
@@ -110,15 +110,25 @@ Inputs:
 Returns:
 -embedding of input data
 '''
-def feat_extract(model, x):
+def feat_extract(model, x, num_layers=None):
     model.eval()
     #right now replace the classifier part with kNN
     #shape (batch_sz, 512, 1, 1)
+    if peel_layers != None:
+        cur_model = peel_layers(model, num_layers) #######
+    else:
+        if use_gpu:
+            cur_model = model.module.features
+        else:
+            cur_model = model.features
+    x = cur_model(x)
+    '''
     if use_gpu:
         x = model.module.features(x)
+        #x = cur_model(x)
     else:
         x = model.features(x)
-    
+    '''
     x = x.view(x.size(0), x.size(1))
     #print('x size {}'.format(x.size()))
     return x
@@ -201,18 +211,57 @@ def get_loader(train=False):
     return data_loader
 
 '''
+Create module with given number of blocks. Used for training after layers are
+peeled off.
+Input:
+-model to use
+-num_layers, number of layers in the vgg Sequential component to peel off. Should be multiples of 3 for each block, then plus 1
+note the final avg pool layer should always be included in the end. Count max pool layer within the peeled off layers.
+'''
+def peel_layers(model, num_layers):
+    #modules have name .features, which is a Sequential, within which certain blocks are picked.
+    # 'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M']
+    #model._modules is OrderedDict
+    if use_gpu:
+        model_layers = model._modules['module']._modules['features']._modules
+    else:
+        model_layers = model._modules['features']._modules
+    num_layers = len(model_layers) - num_to_peel
+    final_layers = []
+    #OrderedDict order guaranteed
+    for i, (name, layer) in enumerate(model_layers.items()):
+        if i == num_layers:
+            break
+        final_layers.append(layer)
+    #append MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False), does not include params
+    #append AvgPool2d(kernel_size=1, stride=1, padding=0), which does not have params, so no need to copy
+    final_layers.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False) , nn.AvgPool2d(kernel_size=1, stride=1))
+    
+    return nn.Sequential(*final_layers)
+    
+
+'''
 path: path to check point
 '''
 def get_model(path='pretrained/ckpt.t7'):
     #model = nn.DataParallel(VGG('VGG16'))
     model = VGG('VGG16')
-    
+    #if True:
+    #    print(model._modules['features']._modules)
     #checkpoint=torch.load(path, map_location='cpu')
     #checkpoint=torch.load(path, map_location=lambda storage, loc:storage)
     #model was trained on GPU
     state_dict = torch.load(path)['net']
+    if False:
+        print(state_dict.keys())
     if use_gpu:
         model = nn.DataParallel(VGG('VGG16'))
+    if True:
+        print(list(model._modules.keys()))
+        if use_gpu:
+            print(model._modules['module']._modules['features']._modules)
+        else:
+            print(model._modules['features']._modules)
     else:
         model = VGG('VGG16')
         new_dict = OrderedDict()
@@ -220,6 +269,8 @@ def get_model(path='pretrained/ckpt.t7'):
             key = key[7:] #since 'module.' has len 7
             new_dict[key] = val.to('cpu')
         state_dict = new_dict
+    if True:
+        print(state_dict.keys())
     model.load_state_dict(state_dict)
     return model
 
@@ -234,8 +285,9 @@ if __name__ == '__main__':
     else:
         embs_path = 'data/train_embs.pth'
         targets_path = 'data/train_classes.pth'
-    
-    train_loader = get_loader(train=True)
+
+    training=False
+    train_loader = get_loader(train=training)
     if os.path.isfile(embs_path) and os.path.isfile(targets_path):
         embs = torch.load(embs_path)
         targets = torch.load(targets_path)
