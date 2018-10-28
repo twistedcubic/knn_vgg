@@ -22,7 +22,7 @@ else:
 '''
 Replace last part of VGG with knn, compare results
 '''
-def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5, normalize_feat=False):
+def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5, normalize_feat=False, num_layers=None):
     #load data
     #val_loader = get_loader()
     #model=models.vgg16(pretrained=True)
@@ -39,14 +39,14 @@ def vgg_knn_compare(model, val_loader, feat_precomp, class_precomp, k=5, normali
         #compare the models
         with torch.no_grad():
             vgg_cor += vgg_correct(model, input, target) 
-            knn_cor += knn_correct(model, k, input, target, feat_precomp, class_precomp, normalize_feat=normalize_feat)
+            knn_cor += knn_correct(model, k, input, target, feat_precomp, class_precomp, normalize_feat=normalize_feat, num_layers=num_layers)
         #print('corr {} {}'.format(vgg_cor, knn_cor))
         
         del input, target
     vgg_acc = vgg_cor/total
     knn_acc = knn_cor/total
-    print('vgg_cor: {} knn_cor: {} total: {}'.format(vgg_cor, knn_cor, total))
-    print('vgg_acc: {} knn_acc: {}'.format(vgg_acc, knn_acc))
+    print('Peeling off {} layers -- vgg_cor: {} knn_cor: {} total: {}'.format(num_layers, vgg_cor, knn_cor, total))
+    print('knn_acc: {}'.format(knn_acc))
     
     return vgg_acc, knn_acc
 
@@ -70,8 +70,14 @@ Input:
 -x, img data, in batches.
 '''
 def knn_correct(model, k, input, targets, feat_precomp, class_precomp, normalize_feat=False, num_layers=None):
+
+    model = peel_layers(model, num_layers)
+    #print('peeled_model {}'.format(model))
+    embs = model(input)
     
-    embs = feat_extract(model, input, num_layers=num_layers)
+    embs = embs.view(embs.size(0), embs.size(1))    
+    #embs = feat_extract(model, input, num_layers=num_layers)
+    
     #print('embs size {}'.format(embs.size()))
     correct = 0
     dist_func_name = 'l2'
@@ -107,6 +113,7 @@ Extract features from trained model using input data.
 Inputs:
 -model: Pytorch pretrained model.
 -x: img data, in batch
+-num_layers: num_layers to peel
 Returns:
 -embedding of input data
 '''
@@ -115,12 +122,13 @@ def feat_extract(model, x, num_layers=None):
     #right now replace the classifier part with kNN
     #shape (batch_sz, 512, 1, 1)
     if peel_layers != None:
-        cur_model = peel_layers(model, num_layers) #######
+        cur_model = peel_layers(model, num_layers)
     else:
         if use_gpu:
             cur_model = model.module.features
         else:
             cur_model = model.features
+    #print('peeled model: {}'.format(cur_model))
     x = cur_model(x)
     '''
     if use_gpu:
@@ -129,6 +137,7 @@ def feat_extract(model, x, num_layers=None):
     else:
         x = model.features(x)
     '''
+    #print('x size {}'.format(x.size()))
     x = x.view(x.size(0), x.size(1))
     #print('x size {}'.format(x.size()))
     return x
@@ -142,7 +151,7 @@ Returns embeddings of imgs in dataset, as lists of data and embeddings.
 Input:
 -knn: vgg model
 '''
-def create_embed(model, dataloader, normalize_feat=False):
+def create_embed(model, dataloader, normalize_feat=True, num_layers=None):
     model.eval()
     embs = None
     #conserves memory
@@ -158,7 +167,7 @@ def create_embed(model, dataloader, normalize_feat=False):
         input, target = input.to(device), target.to(device)
         #size (batch_sz, 512)
         with torch.no_grad():
-            feat = feat_extract(model, input)
+            feat = feat_extract(model, input, num_layers=num_layers)
         
         if not stream:
             if embs is None:
@@ -219,6 +228,11 @@ Input:
 note the final avg pool layer should always be included in the end. Count max pool layer within the peeled off layers.
 '''
 def peel_layers(model, num_layers):
+    if num_layers is None:
+        if use_gpu:
+            return model.module.features
+        else:
+            return model.features
     #modules have name .features, which is a Sequential, within which certain blocks are picked.
     # 'VGG16': [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512, 'M']
     #model._modules is OrderedDict
@@ -226,16 +240,20 @@ def peel_layers(model, num_layers):
         model_layers = model._modules['module']._modules['features']._modules
     else:
         model_layers = model._modules['features']._modules
-    num_layers = len(model_layers) - num_to_peel
+    total_layers = len(model_layers) - num_layers
     final_layers = []
     #OrderedDict order guaranteed
     for i, (name, layer) in enumerate(model_layers.items()):
-        if i == num_layers:
+        if i == total_layers:
             break
         final_layers.append(layer)
+    if num_layers > 11:        
+        final_layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
+        if num_layers > 21:
+            final_layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
     #append MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False), does not include params
     #append AvgPool2d(kernel_size=1, stride=1, padding=0), which does not have params, so no need to copy
-    final_layers.append(nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False) , nn.AvgPool2d(kernel_size=1, stride=1))
+    final_layers.extend([nn.MaxPool2d(kernel_size=2, stride=2, padding=0, dilation=1, ceil_mode=False) , nn.AvgPool2d(kernel_size=1, stride=1)])
     
     return nn.Sequential(*final_layers)
     
@@ -254,14 +272,15 @@ def get_model(path='pretrained/ckpt.t7'):
     state_dict = torch.load(path)['net']
     if False:
         print(state_dict.keys())
-    if use_gpu:
-        model = nn.DataParallel(VGG('VGG16'))
-    if True:
+    if False:
         print(list(model._modules.keys()))
         if use_gpu:
             print(model._modules['module']._modules['features']._modules)
         else:
             print(model._modules['features']._modules)
+           
+    if use_gpu:
+        model = nn.DataParallel(VGG('VGG16'))
     else:
         model = VGG('VGG16')
         new_dict = OrderedDict()
@@ -269,31 +288,37 @@ def get_model(path='pretrained/ckpt.t7'):
             key = key[7:] #since 'module.' has len 7
             new_dict[key] = val.to('cpu')
         state_dict = new_dict
-    if True:
+    if False:
         print(state_dict.keys())
     model.load_state_dict(state_dict)
     return model
 
-if __name__ == '__main__':
-    # train_loader = get_loader(train=True)
-        
+'''
+Input:
+-num_layers: number of layers to peel
+'''
+def run_and_compare(num_layers=None):
+    
+    print('num_layers to peel: {}'.format(num_layers))
     model = get_model()
+    
     model.eval()
     if normalize_feat:
-        embs_path = 'data/train_embs_norm.pth'
-        targets_path = 'data/train_classes_norm.pth'
+        embs_path = 'data/train_embs_norm{}.pth'.format(num_layers)
+        targets_path = 'data/train_classes_norm{}.pth'.format(num_layers)
     else:
         embs_path = 'data/train_embs.pth'
         targets_path = 'data/train_classes.pth'
 
-    training=False
+    #set to False for fast testing.
+    training=True
     train_loader = get_loader(train=training)
     if os.path.isfile(embs_path) and os.path.isfile(targets_path):
         embs = torch.load(embs_path)
         targets = torch.load(targets_path)
     else:        
         #compute feat embed for training data. (total_len, 512)
-        embs, targets = create_embed(model, train_loader, normalize_feat=normalize_feat)
+        embs, targets = create_embed(model, train_loader, normalize_feat=normalize_feat, num_layers=num_layers)
 
         torch.save(embs, embs_path)
         torch.save(targets, targets_path)
@@ -302,6 +327,15 @@ if __name__ == '__main__':
     val_loader = get_loader(train=False)
     print('train dataset size {} test dataset size {}'.format(len(train_loader.dataset), len(val_loader.dataset) ))
     
-    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=1, normalize_feat=normalize_feat)
+    vgg_acc, knn_acc = vgg_knn_compare(model, val_loader, embs, targets, k=1, normalize_feat=normalize_feat, num_layers=num_layers)
     
     
+if __name__ == '__main__':
+    # train_loader = get_loader(train=True)        
+    
+    #should be in multiples of 3, then plus 2, and plus however many M is there
+    allowed_peel = [5, 8, 11, 15, 18, 21, 25, 28] #from 22 on, 256 dim instead of 512
+    #number of layers to peel
+    num_layers_l = [15, 18, 21, 25, 28]#, 15, 18, 22, 25, 28]
+    for num_layers in num_layers_l:
+        run_and_compare(num_layers=num_layers)
