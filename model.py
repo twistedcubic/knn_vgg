@@ -334,7 +334,7 @@ if __name__ == '__main__':
     # train_loader = get_loader(train=True)        
     
     #should be in multiples of 3, then plus 2, and plus however many M is there
-    allowed_peel = [5, 8, 11, 15, 18, 21, 25, 28] #from 22 on, 256 dim instead of 512
+    allowed_peel = [5, 8, 11, 15, 18, 21, 25, 28] #from 21 on, 256 dim instead of 512
     #number of layers to peel
     num_layers_l = [15, 18, 21, 25, 28]#, 15, 18, 22, 25, 28]
     for num_layers in num_layers_l:
