@@ -68,7 +68,7 @@ class FCL():
                         cls = x.max(dim=1)[1]
                         correct += cls.eq(target).sum()
                 acc = correct/test_total
-                if acc > best_acc:
+                if epoch > 100 and acc > best_acc:
                     print('best acc for num_layers {}: {}'.format(self.num_layers, best_acc))
                     save_path = os.path.join(path, 'fc'+str(self.num_layers) + '.t7')
                     torch.save(self.fc.state_dict(), save_path)

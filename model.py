@@ -319,7 +319,7 @@ def run_and_compare(num_layers=None):
     else:        
         #compute feat embed for training data. (total_len, 512)
         embs, targets = create_embed(model, train_loader, normalize_feat=normalize_feat, num_layers=num_layers)
-
+        #should save as two-element dict
         torch.save(embs, embs_path)
         torch.save(targets, targets_path)
     
