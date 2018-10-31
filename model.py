@@ -294,6 +294,19 @@ def get_model(path='pretrained/ckpt.t7'):
     return model
 
 '''
+Load features for given number of layers peeled off.
+'''
+def load_features(num_layers):
+    embs_path = 'data/train_embs_norm{}.pth'.format(num_layers)
+    targets_path = 'data/train_classes_norm{}.pth'.format(num_layers)
+    if os.path.isfile(embs_path) and os.path.isfile(targets_path):
+        embs = torch.load(embs_path)
+        targets = torch.load(targets_path)
+    else:
+        raise Exception('Files don\'t exist {}, {}'.format(embs_path, targets_path))
+    return embs, targets
+   
+'''
 Input:
 -num_layers: number of layers to peel
 '''
