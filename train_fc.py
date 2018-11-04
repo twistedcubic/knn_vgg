@@ -79,6 +79,7 @@ if __name__ == '__main__':
     #this model has all layers
     model = model.get_model()
     num_layers_l = [5, 8, 11, 15, 18, 21, 25, 28]
+    num_layers_l = [5]
     
     trainloader = get_loader(train=True)
     testloader = get_loader(train=False)
