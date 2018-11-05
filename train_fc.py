@@ -9,7 +9,7 @@ import torch.nn as nn
 import model
 
 use_gpu = model.use_gpu
-device = mode.device
+device = model.device
 
 class FCL():
     '''
@@ -77,14 +77,14 @@ class FCL():
 
 if __name__ == '__main__':
     #this model has all layers
-    model = model.get_model()
+    net = model.get_model()
     num_layers_l = [5, 8, 11, 15, 18, 21, 25, 28]
     num_layers_l = [5]
     
-    trainloader = get_loader(train=True)
-    testloader = get_loader(train=False)
+    trainloader = model.get_loader(train=True)
+    testloader = model.get_loader(train=False)
 
     for num_layers in num_layers_l:
-        cur_model = peel_layers(model, num_layers)
+        cur_model = model.peel_layers(net, num_layers)
         fcl = FCL(cur_model, num_layers)
         fcl.train_fc(trainloader, testloader, epochs=200)

@@ -42,10 +42,15 @@ def compute_density(features, targets, k):
     return density_tally
     
 if __name__ == '__main__':
-    num_layers = 5
-    k = 5
-    features, targets = model.load_features(num_layers)
-    print('targets.size {}'.format(targets.size()))
-    #create_knn_graph(features, k)
+    num_layers_l = [5]
+    num_layers_l = [15, 18, 21, 25, 28]
+    num_layers_l = [28]
     
-    compute_density(features, targets, k)
+    for num_layers in num_layers_l:
+        k = 5
+        features, targets = model.load_features(num_layers)
+        #print('targets.size {}'.format(targets.size()))
+        #create_knn_graph(features, k)
+        print('{} layers peeled off:'.format(num_layers))
+        with torch.no_grad():
+            compute_density(features, targets, k)
